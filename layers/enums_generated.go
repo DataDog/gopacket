@@ -13,7 +13,6 @@ import (
 
 func init() {
 	initUnknownTypesForLinkType()
-	initUnknownTypesForEthernetType()
 	initUnknownTypesForPPPType()
 	initUnknownTypesForIPProtocol()
 	initUnknownTypesForSCTPChunkType()
@@ -65,17 +64,17 @@ func initUnknownTypesForLinkType() {
 
 // Decoder calls EthernetTypeMetadata.DecodeWith's decoder.
 func (a EthernetType) Decode(data []byte, p gopacket.PacketBuilder) error {
-	return EthernetTypeMetadata[a].DecodeWith.Decode(data, p)
+	return EthernetTypeMetadata(a).DecodeWith.Decode(data, p)
 }
 
 // String returns EthernetTypeMetadata.Name.
 func (a EthernetType) String() string {
-	return EthernetTypeMetadata[a].Name
+	return EthernetTypeMetadata(a).Name
 }
 
 // LayerType returns EthernetTypeMetadata.LayerType.
 func (a EthernetType) LayerType() gopacket.LayerType {
-	return EthernetTypeMetadata[a].LayerType
+	return EthernetTypeMetadata(a).LayerType
 }
 
 type errorDecoderForEthernetType int
@@ -85,19 +84,6 @@ func (a *errorDecoderForEthernetType) Decode(data []byte, p gopacket.PacketBuild
 }
 func (a *errorDecoderForEthernetType) Error() string {
 	return fmt.Sprintf("Unable to decode EthernetType %d", int(*a))
-}
-
-var errorDecodersForEthernetType [65536]errorDecoderForEthernetType
-var EthernetTypeMetadata [65536]EnumMetadata
-
-func initUnknownTypesForEthernetType() {
-	for i := 0; i < 65536; i++ {
-		errorDecodersForEthernetType[i] = errorDecoderForEthernetType(i)
-		EthernetTypeMetadata[i] = EnumMetadata{
-			DecodeWith: &errorDecodersForEthernetType[i],
-			Name:       "UnknownEthernetType",
-		}
-	}
 }
 
 // Decoder calls PPPTypeMetadata.DecodeWith's decoder.

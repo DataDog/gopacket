@@ -138,6 +138,9 @@ type TPacket struct {
 	socketStats SocketStats
 	// same as socketStats, but with an extra field freeze_q_cnt
 	socketStatsV3 SocketStatsV3
+
+	// stores the pipe FDs used to cancel polling
+	exitPipeFds []int
 }
 
 var _ gopacket.ZeroCopyPacketDataSource = &TPacket{}
@@ -232,6 +235,9 @@ func (h *TPacket) Close() {
 	unix.Close(h.fd)
 	h.fd = -1
 	runtime.SetFinalizer(h, nil)
+	if h.exitPipeFds != nil {
+		h.closeExitPipeFds()
+	}
 }
 
 // NewTPacket returns a new TPacket object for reading packets off the wire.
@@ -306,6 +312,12 @@ func (h *TPacket) releaseCurrentPacket() error {
 //	// do everything you want with data1 here, copying bytes out of it if you'd like to keep them around.
 //	data2, _, _ := tp.ZeroCopyReadPacketData()  // invalidates bytes in data1
 func (h *TPacket) ZeroCopyReadPacketData() (data []byte, ci gopacket.CaptureInfo, err error) {
+	return h.ZeroCopyReadPacketDataWithExit(nil)
+}
+
+// ZeroCopyReadPacketDataWithExit reads the next packet off the wire, and returns its data.
+// It functions the same as ZeroCopyReadPacketData but will exit if the exit channel is closed.
+func (h *TPacket) ZeroCopyReadPacketDataWithExit(exit <-chan struct{}) (data []byte, ci gopacket.CaptureInfo, err error) {
 	h.mu.Lock()
 retry:
 	if h.current == nil || !h.headerNextNeeded || !h.current.next() {
@@ -313,7 +325,7 @@ retry:
 			h.releaseCurrentPacket()
 		}
 		h.current = h.getTPacketHeader()
-		if err = h.pollForFirstPacket(h.current); err != nil {
+		if err = h.pollForFirstPacket(h.current, exit); err != nil {
 			h.headerNextNeeded = false
 			h.mu.Unlock()
 			return
@@ -465,12 +477,62 @@ func (h *TPacket) getTPacketHeader() header {
 	panic("handle tpacket version is invalid")
 }
 
-func (h *TPacket) pollForFirstPacket(hdr header) error {
+func (h *TPacket) prepareExitPipeFds() error {
+	if h.exitPipeFds != nil {
+		return nil
+	}
+	pipeFds := make([]int, 2)
+	err := unix.Pipe(pipeFds)
+	if err != nil {
+		return err
+	}
+	h.exitPipeFds = pipeFds
+	return nil
+}
+
+func (h *TPacket) closeExitPipeFds() {
+	// linux basically guarantees the FD is closed, regardless of the error: https://lwn.net/Articles/576478/
+	unix.Close(h.exitPipeFds[0])
+	unix.Close(h.exitPipeFds[1])
+	h.exitPipeFds = nil
+}
+func (h *TPacket) triggerExitPipe() {
+	// if this fails, that's okay (the poll timeout will take over)
+	unix.Write(h.exitPipeFds[1], []byte{0})
+}
+
+func (h *TPacket) pollForFirstPacket(hdr header, exit <-chan struct{}) error {
+	h.prepareExitPipeFds()
+
+	done := make(chan chan struct{})
+	defer func() {
+		doneReq := make(chan struct{})
+		done <- doneReq
+		// wait for it to properly handle exit pipe FDs if necessary
+		<-doneReq
+	}()
+
+	go func() {
+		var doneReq chan struct{}
+		select {
+		case <-exit:
+			h.triggerExitPipe()
+			doneReq = <-done
+			h.closeExitPipeFds()
+		case doneReq = <-done:
+		}
+		close(doneReq)
+	}()
+
 	tm := int(h.opts.pollTimeout / time.Millisecond)
 	for hdr.getStatus()&unix.TP_STATUS_USER == 0 {
-		pollset := [1]unix.PollFd{
+		pollset := [2]unix.PollFd{
 			{
 				Fd:     int32(h.fd),
+				Events: unix.POLLIN,
+			},
+			{
+				Fd:     int32(h.exitPipeFds[0]),
 				Events: unix.POLLIN,
 			},
 		}
@@ -478,8 +540,16 @@ func (h *TPacket) pollForFirstPacket(hdr header) error {
 		if n == 0 {
 			return ErrTimeout
 		}
+		// we got cancelled, so exit
+		if pollset[1].Revents&unix.POLLIN > 0 {
+			return ErrTimeout
+		}
 
 		atomic.AddInt64(&h.stats.Polls, 1)
+
+		if pollset[1].Revents > 0 {
+			return ErrPoll
+		}
 		if pollset[0].Revents&unix.POLLERR > 0 {
 			return ErrPoll
 		}

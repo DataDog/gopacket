@@ -144,7 +144,6 @@ type TPacket struct {
 
 	// stores the pipe FDs used to cancel polling
 	exitPipeFds []int
-	exit        chan struct{}
 	once        sync.Once
 }
 

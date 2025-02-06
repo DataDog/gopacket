@@ -144,7 +144,7 @@ type TPacket struct {
 
 	// stores the pipe FDs used to cancel polling
 	exitPipeFds []int
-	once        sync.Once
+	stopOnce    sync.Once
 }
 
 var _ gopacket.ZeroCopyPacketDataSource = &TPacket{}
@@ -227,33 +227,37 @@ func (h *TPacket) setUpRing() (err error) {
 	return nil
 }
 
-// Close cleans up the TPacket.  It should not be used after the Close call.
-func (h *TPacket) Close() {
-	h.once.Do(func() {
+// Stop cancels the current poll from ZeroCopyReadPacketData, if there is one.
+// It is safe to call Stop while ZeroCopyReadPacketData is blocked in a poll.
+func (h *TPacket) Stop() {
+	h.stopOnce.Do(func() {
 		if h.exitPipeFds != nil {
 			// signal a cancellation - hang up the write-end of the pipe to trigger a POLLHUP
 			unix.Close(h.exitPipeFds[1])
 		}
-
-		// ZeroCopyReadPacketData will hold onto the lock until the polling loop exits.
-		h.mu.Lock()
-		defer h.mu.Unlock()
-
-		if h.exitPipeFds != nil {
-			// close the read-end of the pipe
-			unix.Close(h.exitPipeFds[0])
-			h.exitPipeFds = nil
-		}
-		if h.ring != nil {
-			unix.Munmap(h.ring)
-		}
-		h.ring = nil
-		if h.fd != -1 {
-			unix.Close(h.fd)
-		}
-		h.fd = -1
-		runtime.SetFinalizer(h, nil)
 	})
+}
+
+// Close cleans up the TPacket.  It should not be used after the Close call.
+func (h *TPacket) Close() {
+	if h.fd == -1 {
+		return // already closed.
+	}
+
+	h.Stop()
+	if h.exitPipeFds != nil {
+		// close the read-end of the pipe
+		unix.Close(h.exitPipeFds[0])
+	}
+	h.exitPipeFds = nil
+
+	if h.ring != nil {
+		unix.Munmap(h.ring)
+	}
+	h.ring = nil
+	unix.Close(h.fd)
+	h.fd = -1
+	runtime.SetFinalizer(h, nil)
 }
 
 // NewTPacket returns a new TPacket object for reading packets off the wire.

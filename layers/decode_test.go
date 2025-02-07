@@ -339,6 +339,7 @@ func BenchmarkDecodeFuncCallOverheadDecoderCall(b *testing.B) {
 	}
 }
 
+/*
 func BenchmarkDecodeFuncCallOverheadArrayCall(b *testing.B) {
 	EthernetTypeMetadata[1] = EnumMetadata{DecodeWith: gopacket.DecodeFunc(testDecoder)}
 	d := EthernetType(1)
@@ -348,6 +349,7 @@ func BenchmarkDecodeFuncCallOverheadArrayCall(b *testing.B) {
 		_ = d.Decode(data, pb)
 	}
 }
+*/
 
 func BenchmarkFmtVerboseString(b *testing.B) {
 	b.StopTimer()

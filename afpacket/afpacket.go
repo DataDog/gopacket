@@ -145,6 +145,7 @@ type TPacket struct {
 	// stores the pipe FDs used to cancel polling
 	exitPipeFds []int
 	stopOnce    sync.Once
+	closeOnce   sync.Once
 }
 
 var _ gopacket.ZeroCopyPacketDataSource = &TPacket{}
@@ -238,26 +239,28 @@ func (h *TPacket) Stop() {
 	})
 }
 
-// Close cleans up the TPacket.  It should not be used after the Close call.
+// Close cleans up the TPacket.
 func (h *TPacket) Close() {
-	if h.fd == -1 {
-		return // already closed.
-	}
+	h.closeOnce.Do(func() {
+		h.Stop()
 
-	h.Stop()
-	if h.exitPipeFds != nil {
-		// close the read-end of the pipe
-		unix.Close(h.exitPipeFds[0])
-	}
-	h.exitPipeFds = nil
+		h.mu.Lock()
+		defer h.mu.Unlock()
 
-	if h.ring != nil {
-		unix.Munmap(h.ring)
-	}
-	h.ring = nil
-	unix.Close(h.fd)
-	h.fd = -1
-	runtime.SetFinalizer(h, nil)
+		if h.exitPipeFds != nil {
+			// close the read-end of the pipe
+			unix.Close(h.exitPipeFds[0])
+		}
+		h.exitPipeFds = nil
+
+		if h.ring != nil {
+			unix.Munmap(h.ring)
+		}
+		h.ring = nil
+		unix.Close(h.fd)
+		h.fd = -1
+		runtime.SetFinalizer(h, nil)
+	})
 }
 
 // NewTPacket returns a new TPacket object for reading packets off the wire.

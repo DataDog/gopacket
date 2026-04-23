@@ -17,6 +17,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"runtime"
 	"sync"
@@ -304,12 +305,13 @@ errlbl:
 
 // SetBPF attaches a BPF filter to the underlying socket
 func (h *TPacket) SetBPF(filter []bpf.RawInstruction) error {
-	var p unix.SockFprog
-	if len(filter) > int(^uint16(0)) {
+	if len(filter) > math.MaxUint16 {
 		return errors.New("filter too large")
 	}
-	p.Len = uint16(len(filter))
-	p.Filter = (*unix.SockFilter)(unsafe.Pointer(&filter[0]))
+	p := unix.SockFprog{
+		Len:    uint16(len(filter)),
+		Filter: (*unix.SockFilter)(unsafe.Pointer(&filter[0])),
+	}
 	return unix.SetsockoptSockFprog(h.fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, &p)
 }
 
@@ -318,11 +320,10 @@ func (h *TPacket) SetEBPF(progFd int) error {
 	return unix.SetsockoptInt(h.fd, unix.SOL_SOCKET, unix.SO_ATTACH_BPF, progFd)
 }
 
-func (h *TPacket) releaseCurrentPacket() error {
+func (h *TPacket) releaseCurrentPacket() {
 	h.current.clearStatus()
 	h.offset++
 	h.shouldReleasePacket = false
-	return nil
 }
 
 // ZeroCopyReadPacketData reads the next packet off the wire, and returns its data.

@@ -5,12 +5,10 @@
 // tree.
 
 //go:build linux
-// +build linux
 
 package afpacket
 
 import (
-	"reflect"
 	"time"
 	"unsafe"
 
@@ -66,16 +64,8 @@ func tpAlign(x int) int {
 type v1header C.struct_tpacket_hdr
 type v2header C.struct_tpacket2_hdr
 
-func makeSlice(start uintptr, length int) (data []byte) {
-	slice := (*reflect.SliceHeader)(unsafe.Pointer(&data))
-	slice.Data = start
-	slice.Len = length
-	slice.Cap = length
-	return
-}
-
 func insertVlanHeader(data []byte, vlanTCI int, opts *options) []byte {
-	if vlanTCI == 0 || !opts.addVLANHeader {
+	if vlanTCI <= 0 || !opts.addVLANHeader {
 		return data
 	}
 	eth := make([]byte, 0, len(data)+C.VLAN_HLEN)
@@ -96,8 +86,8 @@ func (h *v1header) clearStatus() {
 func (h *v1header) getTime() time.Time {
 	return time.Unix(int64(h.tp_sec), int64(h.tp_usec)*1000)
 }
-func (h *v1header) getData(opts *options) []byte {
-	return makeSlice(uintptr(unsafe.Pointer(h))+uintptr(h.tp_mac), int(h.tp_snaplen))
+func (h *v1header) getData(_ *options) []byte {
+	return unsafe.Slice((*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(h))+uintptr(h.tp_mac))), int(h.tp_snaplen))
 }
 func (h *v1header) getLength() int {
 	return int(h.tp_len)
@@ -115,6 +105,9 @@ func (h *v1header) next() bool {
 }
 
 func (h *v2header) getVLAN() int {
+	if h.tp_status&unix.TP_STATUS_VLAN_VALID != 0 {
+		return int(h.tp_vlan_tci & 0xfff)
+	}
 	return -1
 }
 func (h *v2header) getStatus() int {
@@ -127,8 +120,8 @@ func (h *v2header) getTime() time.Time {
 	return time.Unix(int64(h.tp_sec), int64(h.tp_nsec))
 }
 func (h *v2header) getData(opts *options) []byte {
-	data := makeSlice(uintptr(unsafe.Pointer(h))+uintptr(h.tp_mac), int(h.tp_snaplen))
-	return insertVlanHeader(data, int(h.tp_vlan_tci), opts)
+	data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(h))+uintptr(h.tp_mac))), int(h.tp_snaplen))
+	return insertVlanHeader(data, h.getVLAN(), opts)
 }
 func (h *v2header) getLength() int {
 	return int(h.tp_len)
@@ -177,10 +170,8 @@ func (w *v3wrapper) getTime() time.Time {
 	return time.Unix(int64(w.packet.tp_sec), int64(w.packet.tp_nsec))
 }
 func (w *v3wrapper) getData(opts *options) []byte {
-	data := makeSlice(uintptr(unsafe.Pointer(w.packet))+uintptr(w.packet.tp_mac), int(w.packet.tp_snaplen))
-
-	hv1 := (*C.struct_tpacket_hdr_variant1)(unsafe.Pointer(&w.packet.anon0[0]))
-	return insertVlanHeader(data, int(hv1.tp_vlan_tci), opts)
+	data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(w.packet))+uintptr(w.packet.tp_mac))), int(w.packet.tp_snaplen))
+	return insertVlanHeader(data, w.getVLAN(), opts)
 }
 func (w *v3wrapper) getLength() int {
 	return int(w.packet.tp_len)
@@ -199,12 +190,6 @@ func (w *v3wrapper) next() bool {
 		return false
 	}
 
-	next := uintptr(unsafe.Pointer(w.packet))
-	if w.packet.tp_next_offset != 0 {
-		next += uintptr(w.packet.tp_next_offset)
-	} else {
-		next += uintptr(tpAlign(int(w.packet.tp_snaplen) + int(w.packet.tp_mac)))
-	}
-	w.packet = (*C.struct_tpacket3_hdr)(unsafe.Pointer(next))
+	w.packet = (*C.struct_tpacket3_hdr)(unsafe.Pointer(uintptr(unsafe.Pointer(w.packet)) + uintptr(w.packet.tp_next_offset)))
 	return true
 }

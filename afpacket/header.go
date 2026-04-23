@@ -65,7 +65,7 @@ type v1header C.struct_tpacket_hdr
 type v2header C.struct_tpacket2_hdr
 
 func insertVlanHeader(data []byte, vlanTCI int, opts *options) []byte {
-	if vlanTCI == 0 || !opts.addVLANHeader {
+	if vlanTCI <= 0 || !opts.addVLANHeader {
 		return data
 	}
 	eth := make([]byte, 0, len(data)+C.VLAN_HLEN)
@@ -105,6 +105,9 @@ func (h *v1header) next() bool {
 }
 
 func (h *v2header) getVLAN() int {
+	if h.tp_status&unix.TP_STATUS_VLAN_VALID != 0 {
+		return int(h.tp_vlan_tci & 0xfff)
+	}
 	return -1
 }
 func (h *v2header) getStatus() int {
@@ -118,7 +121,7 @@ func (h *v2header) getTime() time.Time {
 }
 func (h *v2header) getData(opts *options) []byte {
 	data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(h))+uintptr(h.tp_mac))), int(h.tp_snaplen))
-	return insertVlanHeader(data, int(h.tp_vlan_tci), opts)
+	return insertVlanHeader(data, h.getVLAN(), opts)
 }
 func (h *v2header) getLength() int {
 	return int(h.tp_len)
@@ -168,9 +171,7 @@ func (w *v3wrapper) getTime() time.Time {
 }
 func (w *v3wrapper) getData(opts *options) []byte {
 	data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(w.packet))+uintptr(w.packet.tp_mac))), int(w.packet.tp_snaplen))
-
-	hv1 := (*C.struct_tpacket_hdr_variant1)(unsafe.Pointer(&w.packet.anon0[0]))
-	return insertVlanHeader(data, int(hv1.tp_vlan_tci), opts)
+	return insertVlanHeader(data, w.getVLAN(), opts)
 }
 func (w *v3wrapper) getLength() int {
 	return int(w.packet.tp_len)

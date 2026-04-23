@@ -1,6 +1,6 @@
 module github.com/google/gopacket
 
-go 1.12
+go 1.25
 
 require (
 	github.com/vishvananda/netlink v1.1.0

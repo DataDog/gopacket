@@ -32,17 +32,6 @@ import (
 	"github.com/google/gopacket"
 )
 
-/*
-#include <linux/if_packet.h>  // AF_PACKET, sockaddr_ll
-#include <linux/if_ether.h>  // ETH_P_ALL
-#include <sys/socket.h>  // socket()
-#include <unistd.h>  // close()
-#include <arpa/inet.h>  // htons()
-#include <sys/mman.h>  // mmap(), munmap()
-#include <poll.h>  // poll()
-*/
-import "C"
-
 var pageSize = unix.Getpagesize()
 
 // ErrPoll returned by poll
@@ -78,37 +67,6 @@ type Stats struct {
 	Polls int64
 }
 
-// SocketStats is a struct where socket stats are stored
-type SocketStats C.struct_tpacket_stats
-
-// Packets returns the number of packets seen by this socket.
-func (s *SocketStats) Packets() uint {
-	return uint(s.tp_packets)
-}
-
-// Drops returns the number of packets dropped on this socket.
-func (s *SocketStats) Drops() uint {
-	return uint(s.tp_drops)
-}
-
-// SocketStatsV3 is a struct where socket stats for TPacketV3 are stored
-type SocketStatsV3 C.struct_tpacket_stats_v3
-
-// Packets returns the number of packets seen by this socket.
-func (s *SocketStatsV3) Packets() uint {
-	return uint(s.tp_packets)
-}
-
-// Drops returns the number of packets dropped on this socket.
-func (s *SocketStatsV3) Drops() uint {
-	return uint(s.tp_drops)
-}
-
-// QueueFreezes returns the number of queue freezes on this socket.
-func (s *SocketStatsV3) QueueFreezes() uint {
-	return uint(s.tp_freeze_q_cnt)
-}
-
 // TPacket implements packet receiving for Linux AF_PACKET versions 1, 2, and 3.
 type TPacket struct {
 	// stats is simple statistics on TPacket's run. This MUST be the first entry to ensure alignment for sync.atomic
@@ -123,7 +81,7 @@ type TPacket struct {
 	opts options
 	mu   sync.Mutex // guards below
 	// offset is the offset into the ring of the current header.
-	offset int
+	offset uint32
 	// current is the current header.
 	current header
 	// shouldReleasePacket is set to true whenever we return packet data, to make sure we remember to release that data back to the kernel.
@@ -139,9 +97,9 @@ type TPacket struct {
 
 	statsMu sync.Mutex // guards stats below
 	// socketStats contains stats from the socket
-	socketStats SocketStats
+	socketStats unix.TpacketStats
 	// same as socketStats, but with an extra field freeze_q_cnt
-	socketStatsV3 SocketStatsV3
+	socketStatsV3 unix.TpacketStatsV3
 
 	// stores the pipe FDs used to cancel polling
 	exitPipeFds []int
@@ -197,21 +155,23 @@ func (h *TPacket) setUpRing() (err error) {
 	totalSize := int(h.opts.framesPerBlock * h.opts.numBlocks * h.opts.frameSize)
 	switch h.tpVersion {
 	case TPacketVersion1, TPacketVersion2:
-		var tp unix.TpacketReq
-		tp.Block_size = C.uint(h.opts.blockSize)
-		tp.Block_nr = C.uint(h.opts.numBlocks)
-		tp.Frame_size = C.uint(h.opts.frameSize)
-		tp.Frame_nr = C.uint(h.opts.framesPerBlock * h.opts.numBlocks)
+		tp := unix.TpacketReq{
+			Block_size: h.opts.blockSize,
+			Block_nr:   h.opts.numBlocks,
+			Frame_size: h.opts.frameSize,
+			Frame_nr:   h.opts.framesPerBlock * h.opts.numBlocks,
+		}
 		if err := unix.SetsockoptTpacketReq(h.fd, unix.SOL_PACKET, unix.PACKET_RX_RING, &tp); err != nil {
 			return fmt.Errorf("setsockopt packet_rx_ring: %v", err)
 		}
 	case TPacketVersion3:
-		var tp unix.TpacketReq3
-		tp.Block_size = C.uint(h.opts.blockSize)
-		tp.Block_nr = C.uint(h.opts.numBlocks)
-		tp.Frame_size = C.uint(h.opts.frameSize)
-		tp.Frame_nr = C.uint(h.opts.framesPerBlock * h.opts.numBlocks)
-		tp.Retire_blk_tov = C.uint(h.opts.blockTimeout / time.Millisecond)
+		tp := unix.TpacketReq3{
+			Block_size:     h.opts.blockSize,
+			Block_nr:       h.opts.numBlocks,
+			Frame_size:     h.opts.frameSize,
+			Frame_nr:       h.opts.framesPerBlock * h.opts.numBlocks,
+			Retire_blk_tov: uint32(h.opts.blockTimeout / time.Millisecond),
+		}
 		if err := unix.SetsockoptTpacketReq3(h.fd, unix.SOL_PACKET, unix.PACKET_RX_RING, &tp); err != nil {
 			return fmt.Errorf("setsockopt packet_rx_ring v3: %v", err)
 		}
@@ -396,40 +356,40 @@ func (h *TPacket) InitSocketStats() error {
 		if err != nil {
 			return err
 		}
-		h.socketStatsV3 = SocketStatsV3{}
+		h.socketStatsV3 = unix.TpacketStatsV3{}
 	} else {
 		_, err := unix.GetsockoptTpacketStats(h.fd, unix.SOL_PACKET, unix.PACKET_STATISTICS)
 		if err != nil {
 			return err
 		}
-		h.socketStats = SocketStats{}
+		h.socketStats = unix.TpacketStats{}
 	}
 	return nil
 }
 
 // SocketStats saves stats from the socket to the TPacket instance.
-func (h *TPacket) SocketStats() (SocketStats, SocketStatsV3, error) {
+func (h *TPacket) SocketStats() (unix.TpacketStats, unix.TpacketStatsV3, error) {
 	h.statsMu.Lock()
 	defer h.statsMu.Unlock()
 	// We need to save the counters since asking for the stats will clear them
 	if h.tpVersion == TPacketVersion3 {
 		ssv3, err := unix.GetsockoptTpacketStatsV3(h.fd, unix.SOL_PACKET, unix.PACKET_STATISTICS)
 		if err != nil {
-			return SocketStats{}, SocketStatsV3{}, err
+			return unix.TpacketStats{}, unix.TpacketStatsV3{}, err
 		}
 
-		h.socketStatsV3.tp_packets += ssv3.Packets
-		h.socketStatsV3.tp_drops += ssv3.Drops
-		h.socketStatsV3.tp_freeze_q_cnt += ssv3.Freeze_q_cnt
+		h.socketStatsV3.Packets += ssv3.Packets
+		h.socketStatsV3.Drops += ssv3.Drops
+		h.socketStatsV3.Freeze_q_cnt += ssv3.Freeze_q_cnt
 		return h.socketStats, h.socketStatsV3, nil
 	}
 	ss, err := unix.GetsockoptTpacketStats(h.fd, unix.SOL_PACKET, unix.PACKET_STATISTICS)
 	if err != nil {
-		return SocketStats{}, SocketStatsV3{}, err
+		return unix.TpacketStats{}, unix.TpacketStatsV3{}, err
 	}
 
-	h.socketStats.tp_packets += ss.Packets
-	h.socketStats.tp_drops += ss.Drops
+	h.socketStats.Packets += ss.Packets
+	h.socketStats.Drops += ss.Drops
 	return h.socketStats, h.socketStatsV3, nil
 }
 
@@ -468,14 +428,14 @@ func (h *TPacket) getTPacketHeader() header {
 		if h.offset >= h.opts.framesPerBlock*h.opts.numBlocks {
 			h.offset = 0
 		}
-		return (*v1header)(unsafe.Pointer(uintptr(h.rawring) + uintptr(h.opts.frameSize*h.offset)))
+		return (*TPacketHdr)(unsafe.Pointer(uintptr(h.rawring) + uintptr(h.opts.frameSize*h.offset)))
 	case TPacketVersion2:
 		if h.offset >= h.opts.framesPerBlock*h.opts.numBlocks {
 			h.offset = 0
 		}
-		return (*v2header)(unsafe.Pointer(uintptr(h.rawring) + uintptr(h.opts.frameSize*h.offset)))
+		return (*TPacket2Hdr)(unsafe.Pointer(uintptr(h.rawring) + uintptr(h.opts.frameSize*h.offset)))
 	case TPacketVersion3:
-		// TPacket3 uses each block to return values, instead of each frame.  Hence we need to rotate when we hit #blocks, not #frames.
+		// TPacket3 uses each block to return values, instead of each frame. Hence we need to rotate when we hit #blocks, not #frames.
 		if h.offset >= h.opts.numBlocks {
 			h.offset = 0
 		}

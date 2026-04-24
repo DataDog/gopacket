@@ -120,10 +120,10 @@ const (
 )
 
 type options struct {
-	frameSize      int
-	framesPerBlock int
-	blockSize      int
-	numBlocks      int
+	frameSize      uint32
+	framesPerBlock uint32
+	blockSize      uint32
+	numBlocks      uint32
 	addVLANHeader  bool
 	addPktType     bool
 	blockTimeout   time.Duration
@@ -148,11 +148,11 @@ func parseOptions(opts ...interface{}) (ret options, err error) {
 	for _, opt := range opts {
 		switch v := opt.(type) {
 		case OptFrameSize:
-			ret.frameSize = int(v)
+			ret.frameSize = uint32(v)
 		case OptBlockSize:
-			ret.blockSize = int(v)
+			ret.blockSize = uint32(v)
 		case OptNumBlocks:
-			ret.numBlocks = int(v)
+			ret.numBlocks = uint32(v)
 		case OptBlockTimeout:
 			ret.blockTimeout = time.Duration(v)
 		case OptPollTimeout:
@@ -180,7 +180,7 @@ func parseOptions(opts ...interface{}) (ret options, err error) {
 }
 func (o options) check() error {
 	switch {
-	case o.blockSize%pageSize != 0:
+	case o.blockSize%uint32(pageSize) != 0:
 		return fmt.Errorf("block size %d must be divisible by page size %d", o.blockSize, pageSize)
 	case o.blockSize%o.frameSize != 0:
 		return fmt.Errorf("block size %d must be divisible by frame size %d", o.blockSize, o.frameSize)

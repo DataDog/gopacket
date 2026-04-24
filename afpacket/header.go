@@ -9,6 +9,7 @@
 package afpacket
 
 import (
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -28,7 +29,7 @@ import "C"
 
 type header interface {
 	// getStatus returns the TPacket status of the current header.
-	getStatus() int
+	getStatus() uint32
 	// clearStatus clears the status of the current header, releasing its
 	// underlying data back to the kernel for future use with new packets.
 	// Using the header after calling clearStatus is an error.  clearStatus
@@ -77,11 +78,11 @@ func insertVlanHeader(data []byte, vlanTCI int, opts *options) []byte {
 func (h *v1header) getVLAN() int {
 	return -1
 }
-func (h *v1header) getStatus() int {
-	return int(h.tp_status)
+func (h *v1header) getStatus() uint32 {
+	return atomic.LoadUint32(&h.status)
 }
 func (h *v1header) clearStatus() {
-	h.tp_status = 0
+	atomic.StoreUint32(&h.status, unix.TP_STATUS_KERNEL)
 }
 func (h *v1header) getTime() time.Time {
 	return time.Unix(int64(h.tp_sec), int64(h.tp_usec)*1000)
@@ -105,16 +106,16 @@ func (h *v1header) next() bool {
 }
 
 func (h *v2header) getVLAN() int {
-	if h.tp_status&unix.TP_STATUS_VLAN_VALID != 0 {
+	if h.getStatus()&unix.TP_STATUS_VLAN_VALID != 0 {
 		return int(h.tp_vlan_tci & 0xfff)
 	}
 	return -1
 }
-func (h *v2header) getStatus() int {
-	return int(h.tp_status)
+func (h *v2header) getStatus() uint32 {
+	return atomic.LoadUint32(&h.tp_status)
 }
 func (h *v2header) clearStatus() {
-	h.tp_status = 0
+	atomic.StoreUint32(&h.tp_status, unix.TP_STATUS_KERNEL)
 }
 func (h *v2header) getTime() time.Time {
 	return time.Unix(int64(h.tp_sec), int64(h.tp_nsec))
@@ -160,11 +161,11 @@ func (w *v3wrapper) getVLAN() int {
 	return -1
 }
 
-func (w *v3wrapper) getStatus() int {
-	return int(w.blockhdr.block_status)
+func (w *v3wrapper) getStatus() uint32 {
+	return atomic.LoadUint32(&w.blockhdr.block_status)
 }
 func (w *v3wrapper) clearStatus() {
-	w.blockhdr.block_status = 0
+	atomic.StoreUint32(&w.blockhdr.block_status, unix.TP_STATUS_KERNEL)
 }
 func (w *v3wrapper) getTime() time.Time {
 	return time.Unix(int64(w.packet.tp_sec), int64(w.packet.tp_nsec))

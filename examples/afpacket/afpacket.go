@@ -16,11 +16,13 @@ import (
 	"runtime/pprof"
 	"time"
 
+	"golang.org/x/net/bpf"
+	"golang.org/x/sys/unix"
+
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/afpacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
-	"golang.org/x/net/bpf"
 
 	_ "github.com/google/gopacket/layers"
 )
@@ -90,7 +92,7 @@ func (h *afpacketHandle) SetBPFFilter(filter string, snaplen int) (err error) {
 		}
 		bpfIns = append(bpfIns, bpfIns2)
 	}
-	if h.TPacket.SetBPF(bpfIns); err != nil {
+	if err := h.TPacket.SetBPF(bpfIns); err != nil {
 		return err
 	}
 	return h.TPacket.SetBPF(bpfIns)
@@ -107,7 +109,7 @@ func (h *afpacketHandle) Close() {
 }
 
 // SocketStats prints received, dropped, queue-freeze packet stats.
-func (h *afpacketHandle) SocketStats() (as afpacket.SocketStats, asv afpacket.SocketStatsV3, err error) {
+func (h *afpacketHandle) SocketStats() (as unix.TpacketStats, asv unix.TpacketStatsV3, err error) {
 	return h.TPacket.SocketStats()
 }
 
@@ -143,6 +145,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer f.Close()
 		if err := pprof.StartCPUProfile(f); err != nil {
 			log.Fatal(err)
 		}

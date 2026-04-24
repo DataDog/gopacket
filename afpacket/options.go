@@ -9,7 +9,6 @@
 package afpacket
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -18,10 +17,16 @@ import (
 
 // OptTPacketVersion is the version of TPacket to use.
 // It can be passed into NewTPacket.
-type OptTPacketVersion int
+func OptTPacketVersion(v TPacketVersion) Option {
+	return func(opts *options) {
+		opts.version = v
+	}
+}
+
+type TPacketVersion int
 
 // String returns a string representation of the version, generally of the form V#.
-func (t OptTPacketVersion) String() string {
+func (t TPacketVersion) String() string {
 	switch t {
 	case TPacketVersion1:
 		return "V1"
@@ -35,10 +40,16 @@ func (t OptTPacketVersion) String() string {
 	return "InvalidVersion"
 }
 
-// OptSocketType is the socket type used to open the TPacket socket.
-type OptSocketType int
+func OptSocketType(v SocketType) Option {
+	return func(opts *options) {
+		opts.socktype = v
+	}
+}
 
-func (t OptSocketType) String() string {
+// SocketType is the socket type used to open the TPacket socket.
+type SocketType int
+
+func (t SocketType) String() string {
 	switch t {
 	case SocketRaw:
 		return "SOCK_RAW"
@@ -52,43 +63,67 @@ func (t OptSocketType) String() string {
 const (
 	// TPacketVersionHighestAvailable tells NewHandle to use the highest available version of tpacket the kernel has available.
 	// This is the default, should a version number not be given in NewHandle's options.
-	TPacketVersionHighestAvailable = OptTPacketVersion(-1)
-	TPacketVersion1                = OptTPacketVersion(unix.TPACKET_V1)
-	TPacketVersion2                = OptTPacketVersion(unix.TPACKET_V2)
-	TPacketVersion3                = OptTPacketVersion(unix.TPACKET_V3)
+	TPacketVersionHighestAvailable = TPacketVersion(-1)
+	TPacketVersion1                = TPacketVersion(unix.TPACKET_V1)
+	TPacketVersion2                = TPacketVersion(unix.TPACKET_V2)
+	TPacketVersion3                = TPacketVersion(unix.TPACKET_V3)
 	tpacketVersionMax              = TPacketVersion3
 	tpacketVersionMin              = -1
 	// SocketRaw is the default socket type.  It returns packet data
 	// including the link layer (ethernet headers, etc).
-	SocketRaw = OptSocketType(unix.SOCK_RAW)
+	SocketRaw = SocketType(unix.SOCK_RAW)
 	// SocketDgram strips off the link layer when reading packets, and adds
 	// the link layer back automatically on packet writes (coming soon...)
-	SocketDgram = OptSocketType(unix.SOCK_DGRAM)
+	SocketDgram = SocketType(unix.SOCK_DGRAM)
 )
 
 // OptInterface is the specific interface to bind to.
 // It can be passed into NewTPacket.
-type OptInterface string
+func OptInterface(v string) Option {
+	return func(opts *options) {
+		opts.iface = v
+	}
+}
 
 // OptFrameSize is TPacket's tp_frame_size
 // It can be passed into NewTPacket.
-type OptFrameSize int
+func OptFrameSize(v uint32) Option {
+	return func(opts *options) {
+		opts.frameSize = v
+	}
+}
 
 // OptBlockSize is TPacket's tp_block_size
 // It can be passed into NewTPacket.
-type OptBlockSize int
+func OptBlockSize(v uint32) Option {
+	return func(opts *options) {
+		opts.blockSize = v
+	}
+}
 
 // OptNumBlocks is TPacket's tp_block_nr
 // It can be passed into NewTPacket.
-type OptNumBlocks int
+func OptNumBlocks(v uint32) Option {
+	return func(opts *options) {
+		opts.numBlocks = v
+	}
+}
 
-// OptBlockTimeout is TPacket v3's tp_retire_blk_tov.  Note that it has only millisecond granularity, so must be >= 1 ms.
+// OptBlockTimeout is TPacket v3's tp_retire_blk_tov.  Note that it has only millisecond granularity, so must be >= 1ms.
 // It can be passed into NewTPacket.
-type OptBlockTimeout time.Duration
+func OptBlockTimeout(v time.Duration) Option {
+	return func(opts *options) {
+		opts.blockTimeout = v
+	}
+}
 
 // OptPollTimeout is the number of milliseconds that poll() should block waiting  for a file
 // descriptor to become ready. Specifying a negative value in  time‐out means an infinite timeout.
-type OptPollTimeout time.Duration
+func OptPollTimeout(v time.Duration) Option {
+	return func(opts *options) {
+		opts.pollTimeout = v
+	}
+}
 
 // OptAddVLANHeader modifies the packet data that comes back from the
 // kernel by adding in the VLAN header that the NIC stripped.  AF_PACKET by
@@ -104,11 +139,19 @@ type OptPollTimeout time.Duration
 // in CaptureInfo.AncillaryData, which is populated out-of-band and has
 // negligible performance impact. Such ancillary data will automatically
 // be provided if available.
-type OptAddVLANHeader bool
+func OptAddVLANHeader(v bool) Option {
+	return func(opts *options) {
+		opts.addVLANHeader = v
+	}
+}
 
 // OptAddPktType enables extraction / population of the packet type as reported by the
 // kernel via the AncillaryPktType struct in CaptureInfo.AncillaryData
-type OptAddPktType bool
+func OptAddPktType(v bool) Option {
+	return func(opts *options) {
+		opts.addPktType = v
+	}
+}
 
 // Default constants used by options.
 const (
@@ -128,8 +171,8 @@ type options struct {
 	addPktType     bool
 	blockTimeout   time.Duration
 	pollTimeout    time.Duration
-	version        OptTPacketVersion
-	socktype       OptSocketType
+	version        TPacketVersion
+	socktype       SocketType
 	iface          string
 }
 
@@ -143,34 +186,12 @@ var defaultOpts = options{
 	socktype:     SocketRaw,
 }
 
-func parseOptions(opts ...interface{}) (ret options, err error) {
+type Option func(*options)
+
+func parseOptions(opts ...Option) (ret options, err error) {
 	ret = defaultOpts
 	for _, opt := range opts {
-		switch v := opt.(type) {
-		case OptFrameSize:
-			ret.frameSize = uint32(v)
-		case OptBlockSize:
-			ret.blockSize = uint32(v)
-		case OptNumBlocks:
-			ret.numBlocks = uint32(v)
-		case OptBlockTimeout:
-			ret.blockTimeout = time.Duration(v)
-		case OptPollTimeout:
-			ret.pollTimeout = time.Duration(v)
-		case OptTPacketVersion:
-			ret.version = v
-		case OptInterface:
-			ret.iface = string(v)
-		case OptSocketType:
-			ret.socktype = v
-		case OptAddVLANHeader:
-			ret.addVLANHeader = bool(v)
-		case OptAddPktType:
-			ret.addPktType = bool(v)
-		default:
-			err = errors.New("unknown type in options")
-			return
-		}
+		opt(&ret)
 	}
 	if err = ret.check(); err != nil {
 		return
@@ -190,6 +211,8 @@ func (o options) check() error {
 		return fmt.Errorf("block timeout %v must be > %v", o.blockTimeout, time.Millisecond)
 	case o.version < tpacketVersionMin || o.version > tpacketVersionMax:
 		return fmt.Errorf("tpacket version %v is invalid", o.version)
+	case o.socktype != SocketRaw && o.socktype != SocketDgram:
+		return fmt.Errorf("socktype %v is invalid", o.socktype)
 	}
 	return nil
 }

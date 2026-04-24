@@ -89,7 +89,7 @@ type TPacket struct {
 	// headerNextNeeded is set to true when header need to move to the next packet. No need to move it case of poll error.
 	headerNextNeeded bool
 	// tpVersion is the version of TPacket actually in use, set by setRequestedTPacketVersion.
-	tpVersion OptTPacketVersion
+	tpVersion TPacketVersion
 	// Hackity hack hack hack.  We need to return a pointer to the header with
 	// getTPacketHeader, and we don't want to allocate a v3wrapper every time,
 	// so we leave it in the TPacket object and return a pointer to it.
@@ -128,7 +128,7 @@ func (h *TPacket) bindToInterface(ifaceName string) error {
 }
 
 // setTPacketVersion asks the kernel to set TPacket to a particular version, and returns an error on failure.
-func (h *TPacket) setTPacketVersion(version OptTPacketVersion) error {
+func (h *TPacket) setTPacketVersion(version TPacketVersion) error {
 	if err := unix.SetsockoptInt(h.fd, unix.SOL_PACKET, unix.PACKET_VERSION, int(version)); err != nil {
 		return fmt.Errorf("setsockopt packet_version: %v", err)
 	}
@@ -229,7 +229,7 @@ func (h *TPacket) Close() {
 // function.
 // If this function succeeds, the user should be sure to Close the returned
 // TPacket when finished with it.
-func NewTPacket(opts ...interface{}) (h *TPacket, err error) {
+func NewTPacket(opts ...Option) (h *TPacket, err error) {
 	h = &TPacket{}
 	if h.opts, err = parseOptions(opts...); err != nil {
 		return nil, err

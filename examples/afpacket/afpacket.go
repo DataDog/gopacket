@@ -9,18 +9,20 @@
 package main
 
 import (
+	"errors"
 	"flag"
-	"fmt"
 	"log"
 	"os"
 	"runtime/pprof"
 	"time"
 
+	"golang.org/x/net/bpf"
+	"golang.org/x/sys/unix"
+
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/afpacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
-	"golang.org/x/net/bpf"
 
 	_ "github.com/google/gopacket/layers"
 )
@@ -28,8 +30,8 @@ import (
 var (
 	iface      = flag.String("i", "any", "Interface to read from")
 	cpuprofile = flag.String("cpuprofile", "", "If non-empty, write CPU profile here")
-	snaplen    = flag.Int("s", 0, "Snaplen, if <= 0, use 65535")
-	bufferSize = flag.Int("b", 8, "Interface buffersize (MB)")
+	snaplen    = flag.Uint("s", 0, "Snaplen, if == 0, use 65535")
+	bufferSize = flag.Uint("b", 8, "Interface buffersize (MB)")
 	filter     = flag.String("f", "port not 22", "BPF filter")
 	count      = flag.Int64("c", -1, "If >= 0, # of packets to capture before returning")
 	verbose    = flag.Int64("log_every", 1, "Write a log every X packets")
@@ -40,7 +42,7 @@ type afpacketHandle struct {
 	TPacket *afpacket.TPacket
 }
 
-func newAfpacketHandle(device string, snaplen int, block_size int, num_blocks int,
+func newAfpacketHandle(device string, snaplen uint32, block_size uint32, num_blocks uint32,
 	useVLAN bool, timeout time.Duration) (*afpacketHandle, error) {
 
 	h := &afpacketHandle{}
@@ -53,8 +55,8 @@ func newAfpacketHandle(device string, snaplen int, block_size int, num_blocks in
 			afpacket.OptNumBlocks(num_blocks),
 			afpacket.OptAddVLANHeader(useVLAN),
 			afpacket.OptPollTimeout(timeout),
-			afpacket.SocketRaw,
-			afpacket.TPacketVersion3)
+			afpacket.OptSocketType(afpacket.SocketRaw),
+			afpacket.OptTPacketVersion(afpacket.TPacketVersion3))
 	} else {
 		h.TPacket, err = afpacket.NewTPacket(
 			afpacket.OptInterface(device),
@@ -63,8 +65,8 @@ func newAfpacketHandle(device string, snaplen int, block_size int, num_blocks in
 			afpacket.OptNumBlocks(num_blocks),
 			afpacket.OptAddVLANHeader(useVLAN),
 			afpacket.OptPollTimeout(timeout),
-			afpacket.SocketRaw,
-			afpacket.TPacketVersion3)
+			afpacket.OptSocketType(afpacket.SocketRaw),
+			afpacket.OptTPacketVersion(afpacket.TPacketVersion3))
 	}
 	return h, err
 }
@@ -80,7 +82,7 @@ func (h *afpacketHandle) SetBPFFilter(filter string, snaplen int) (err error) {
 	if err != nil {
 		return err
 	}
-	bpfIns := []bpf.RawInstruction{}
+	var bpfIns []bpf.RawInstruction
 	for _, ins := range pcapBPF {
 		bpfIns2 := bpf.RawInstruction{
 			Op: ins.Code,
@@ -90,7 +92,7 @@ func (h *afpacketHandle) SetBPFFilter(filter string, snaplen int) (err error) {
 		}
 		bpfIns = append(bpfIns, bpfIns2)
 	}
-	if h.TPacket.SetBPF(bpfIns); err != nil {
+	if err := h.TPacket.SetBPF(bpfIns); err != nil {
 		return err
 	}
 	return h.TPacket.SetBPF(bpfIns)
@@ -107,7 +109,7 @@ func (h *afpacketHandle) Close() {
 }
 
 // SocketStats prints received, dropped, queue-freeze packet stats.
-func (h *afpacketHandle) SocketStats() (as afpacket.SocketStats, asv afpacket.SocketStatsV3, err error) {
+func (h *afpacketHandle) SocketStats() (as unix.TpacketStats, asv unix.TpacketStatsV3, err error) {
 	return h.TPacket.SocketStats()
 }
 
@@ -115,8 +117,8 @@ func (h *afpacketHandle) SocketStats() (as afpacket.SocketStats, asv afpacket.So
 // allocated mmap buffer is close to but smaller than target_size_mb.
 // The restriction is that the block_size must be divisible by both the
 // frame size and page size.
-func afpacketComputeSize(targetSizeMb int, snaplen int, pageSize int) (
-	frameSize int, blockSize int, numBlocks int, err error) {
+func afpacketComputeSize(targetSizeMb uint32, snaplen uint32, pageSize uint32) (
+	frameSize uint32, blockSize uint32, numBlocks uint32, err error) {
 
 	if snaplen < pageSize {
 		frameSize = pageSize / (pageSize / snaplen)
@@ -129,7 +131,7 @@ func afpacketComputeSize(targetSizeMb int, snaplen int, pageSize int) (
 	numBlocks = (targetSizeMb * 1024 * 1024) / blockSize
 
 	if numBlocks == 0 {
-		return 0, 0, 0, fmt.Errorf("Interface buffersize is too small")
+		return 0, 0, 0, errors.New("interface buffersize is too small")
 	}
 
 	return frameSize, blockSize, numBlocks, nil
@@ -143,6 +145,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer f.Close()
 		if err := pprof.StartCPUProfile(f); err != nil {
 			log.Fatal(err)
 		}
@@ -152,7 +155,7 @@ func main() {
 	if *snaplen <= 0 {
 		*snaplen = 65535
 	}
-	szFrame, szBlock, numBlocks, err := afpacketComputeSize(*bufferSize, *snaplen, os.Getpagesize())
+	szFrame, szBlock, numBlocks, err := afpacketComputeSize(uint32(*bufferSize), uint32(*snaplen), uint32(os.Getpagesize()))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -160,7 +163,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = afpacketHandle.SetBPFFilter(*filter, *snaplen)
+	err = afpacketHandle.SetBPFFilter(*filter, int(*snaplen))
 	if err != nil {
 		log.Fatal(err)
 	}

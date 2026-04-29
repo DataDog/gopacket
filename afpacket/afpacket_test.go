@@ -4,13 +4,14 @@
 // that can be found in the LICENSE file in the root of the source
 // tree.
 
-// +build linux
+//go:build linux
 
 package afpacket
 
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestParseOptions(t *testing.T) {
@@ -18,15 +19,17 @@ func TestParseOptions(t *testing.T) {
 	wanted1.frameSize = 1 << 10
 	wanted1.framesPerBlock = wanted1.blockSize / wanted1.frameSize
 	for i, test := range []struct {
-		opts []interface{}
+		opts []Option
 		want options
 		err  bool
 	}{
-		{opts: []interface{}{OptBlockSize(2)}, err: true},
-		{opts: []interface{}{OptFrameSize(333)}, err: true},
-		{opts: []interface{}{OptTPacketVersion(-3)}, err: true},
-		{opts: []interface{}{OptTPacketVersion(5)}, err: true},
-		{opts: []interface{}{OptFrameSize(1 << 10)}, want: wanted1},
+		{opts: []Option{OptBlockSize(2)}, err: true},
+		{opts: []Option{OptFrameSize(333)}, err: true},
+		{opts: []Option{OptTPacketVersion(-3)}, err: true},
+		{opts: []Option{OptTPacketVersion(5)}, err: true},
+		{opts: []Option{OptBlockTimeout(1 * time.Nanosecond)}, err: true},
+		{opts: []Option{OptSocketType(0)}, err: true},
+		{opts: []Option{OptFrameSize(1 << 10)}, want: wanted1},
 	} {
 		got, err := parseOptions(test.opts...)
 		t.Logf("got: %#v\nerr: %v", got, err)

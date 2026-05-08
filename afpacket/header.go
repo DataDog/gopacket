@@ -9,6 +9,7 @@
 package afpacket
 
 import (
+	"fmt"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -34,7 +35,7 @@ type header interface {
 	// the header.
 	getTime() time.Time
 	// getData returns the packet data pointed to by the current header.
-	getData(opts *options) []byte
+	getData(opts *options) ([]byte, error)
 	// getLength returns the total length of the packet.
 	getLength() int
 	// getIfaceIndex returns the index of the network interface
@@ -80,8 +81,11 @@ func (h *TPacketHdr) clearStatus() {
 func (h *TPacketHdr) getTime() time.Time {
 	return time.Unix(int64(h.Sec), int64(h.Usec)*1000)
 }
-func (h *TPacketHdr) getData(_ *options) []byte {
-	return unsafe.Slice((*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(h))+uintptr(h.Mac))), int(h.Snaplen))
+func (h *TPacketHdr) getData(opts *options) ([]byte, error) {
+	if uint32(h.Mac)+h.Snaplen > opts.frameSize {
+		return nil, fmt.Errorf("%w: offset %d + caplen %d > frame len %d", ErrCorruptedPacket, h.Mac, h.Snaplen, opts.frameSize)
+	}
+	return unsafe.Slice((*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(h))+uintptr(h.Mac))), int(h.Snaplen)), nil
 }
 func (h *TPacketHdr) getLength() int {
 	return int(h.Len)
@@ -113,9 +117,12 @@ func (h *TPacket2Hdr) clearStatus() {
 func (h *TPacket2Hdr) getTime() time.Time {
 	return time.Unix(int64(h.Sec), int64(h.Nsec))
 }
-func (h *TPacket2Hdr) getData(opts *options) []byte {
+func (h *TPacket2Hdr) getData(opts *options) ([]byte, error) {
+	if uint32(h.Mac)+h.Snaplen > opts.frameSize {
+		return nil, fmt.Errorf("%w: offset %d + caplen %d > frame len %d", ErrCorruptedPacket, h.Mac, h.Snaplen, opts.frameSize)
+	}
 	data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(h))+uintptr(h.Mac))), int(h.Snaplen))
-	return insertVlanHeader(data, h.getVLAN(), opts)
+	return insertVlanHeader(data, h.getVLAN(), opts), nil
 }
 func (h *TPacket2Hdr) getLength() int {
 	return int(h.Len)
@@ -162,9 +169,12 @@ func (w *v3wrapper) clearStatus() {
 func (w *v3wrapper) getTime() time.Time {
 	return time.Unix(int64(w.packet.Sec), int64(w.packet.Nsec))
 }
-func (w *v3wrapper) getData(opts *options) []byte {
+func (w *v3wrapper) getData(opts *options) ([]byte, error) {
+	if uint32(w.packet.Mac)+w.packet.Snaplen > opts.frameSize {
+		return nil, fmt.Errorf("%w: offset %d + caplen %d > frame len %d", ErrCorruptedPacket, w.packet.Mac, w.packet.Snaplen, opts.frameSize)
+	}
 	data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(w.packet))+uintptr(w.packet.Mac))), int(w.packet.Snaplen))
-	return insertVlanHeader(data, w.getVLAN(), opts)
+	return insertVlanHeader(data, w.getVLAN(), opts), nil
 }
 func (w *v3wrapper) getLength() int {
 	return int(w.packet.Len)

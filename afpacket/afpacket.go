@@ -43,6 +43,9 @@ var ErrTimeout = errors.New("packet poll timeout expired")
 // ErrCancelled returned on Close()
 var ErrCancelled = errors.New("packet poll cancelled")
 
+// ErrCorruptedPacket returned from ZeroCopyReadPacketData if kernel packet sanity checks fail
+var ErrCorruptedPacket = errors.New("packet corrupted")
+
 // AncillaryVLAN structures are used to pass the captured VLAN
 // as ancillary data via CaptureInfo.
 type AncillaryVLAN struct {
@@ -322,7 +325,12 @@ retry:
 			goto retry
 		}
 	}
-	data = h.current.getData(&h.opts)
+	data, err = h.current.getData(&h.opts)
+	if err != nil {
+		h.headerNextNeeded = true
+		h.mu.Unlock()
+		return
+	}
 	ci.Timestamp = h.current.getTime()
 	ci.CaptureLength = len(data)
 	ci.Length = h.current.getLength()

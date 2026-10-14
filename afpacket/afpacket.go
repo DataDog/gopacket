@@ -447,7 +447,7 @@ func (h *TPacket) getTPacketHeader() header {
 		if h.offset >= h.opts.numBlocks {
 			h.offset = 0
 		}
-		h.v3 = initV3Wrapper(unsafe.Pointer(uintptr(h.rawring) + uintptr(h.opts.blockSize*h.offset)))
+		h.v3 = initV3Wrapper(unsafe.Pointer(uintptr(h.rawring)+uintptr(h.opts.blockSize*h.offset)), h.opts.blockSize)
 		return &h.v3
 	}
 	panic("handle tpacket version is invalid")

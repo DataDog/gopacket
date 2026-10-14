@@ -140,16 +140,25 @@ func (h *TPacket2Hdr) next() bool {
 }
 
 type v3wrapper struct {
-	block    *TPacketBlockDesc
-	blockhdr *TPacketHdrV1
-	packet   *TPacket3Hdr
-	used     uint32
+	block     *TPacketBlockDesc
+	blockhdr  *TPacketHdrV1
+	packet    *TPacket3Hdr
+	blockSize uint32
+	used      uint32
 }
 
-func initV3Wrapper(block unsafe.Pointer) (w v3wrapper) {
+func initV3Wrapper(block unsafe.Pointer, blockSize uint32) (w v3wrapper) {
 	w.block = (*TPacketBlockDesc)(block)
 	w.blockhdr = (*TPacketHdrV1)(unsafe.Pointer(&w.block.Hdr[0]))
-	w.packet = (*TPacket3Hdr)(unsafe.Pointer(uintptr(block) + uintptr(w.blockhdr.Offset_to_first_pkt)))
+	w.blockSize = blockSize
+	offset := w.blockhdr.Offset_to_first_pkt
+	if uint64(offset)+SizeOfTPacket3Hdr > uint64(blockSize) {
+		// The offset is corrupted and points outside the block. Fall back to
+		// the block start so every read through w.packet stays in bounds;
+		// getData rejects the resulting garbage as a corrupted packet.
+		offset = 0
+	}
+	w.packet = (*TPacket3Hdr)(unsafe.Pointer(uintptr(block) + uintptr(offset)))
 	return
 }
 
@@ -170,8 +179,13 @@ func (w *v3wrapper) getTime() time.Time {
 	return time.Unix(int64(w.packet.Sec), int64(w.packet.Nsec))
 }
 func (w *v3wrapper) getData(opts *options) ([]byte, error) {
-	if uint32(w.packet.Mac)+w.packet.Snaplen > opts.frameSize {
-		return nil, fmt.Errorf("%w: offset %d + caplen %d > frame len %d", ErrCorruptedPacket, w.packet.Mac, w.packet.Snaplen, opts.frameSize)
+	// TPacket3 packs packets sequentially into blocks and tp_snaplen is the
+	// real captured length: the kernel does not truncate packets to the frame
+	// size, so the packet must be bounded against its block, not frameSize.
+	pktOffset := uint64(uintptr(unsafe.Pointer(w.packet)) - uintptr(unsafe.Pointer(w.block)))
+	if pktOffset+SizeOfTPacket3Hdr > uint64(w.blockSize) ||
+		pktOffset+uint64(w.packet.Mac)+uint64(w.packet.Snaplen) > uint64(w.blockSize) {
+		return nil, fmt.Errorf("%w: offset %d + caplen %d > block len %d", ErrCorruptedPacket, pktOffset+uint64(w.packet.Mac), w.packet.Snaplen, w.blockSize)
 	}
 	data := unsafe.Slice((*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(w.packet))+uintptr(w.packet.Mac))), int(w.packet.Snaplen))
 	return insertVlanHeader(data, w.getVLAN(), opts), nil
@@ -193,6 +207,12 @@ func (w *v3wrapper) next() bool {
 		return false
 	}
 
-	w.packet = (*TPacket3Hdr)(unsafe.Pointer(uintptr(unsafe.Pointer(w.packet)) + uintptr(w.packet.Next_offset)))
+	// Bound the walk to the current block so a corrupted tp_next_offset can
+	// never take the reader outside the ring.
+	nextOffset := uint64(uintptr(unsafe.Pointer(w.packet))-uintptr(unsafe.Pointer(w.block))) + uint64(w.packet.Next_offset)
+	if nextOffset+SizeOfTPacket3Hdr > uint64(w.blockSize) {
+		return false
+	}
+	w.packet = (*TPacket3Hdr)(unsafe.Pointer(uintptr(unsafe.Pointer(w.block)) + uintptr(nextOffset)))
 	return true
 }

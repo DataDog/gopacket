@@ -9,11 +9,15 @@
 package afpacket
 
 import (
+	"bytes"
 	"errors"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestParseOptions(t *testing.T) {
@@ -164,5 +168,126 @@ func TestV3NextStaysWithinBlock(t *testing.T) {
 	}
 	if w.next() {
 		t.Fatal("expected next() to refuse advancing past the block")
+	}
+}
+
+// publishV3Block fills a zeroed block the way the kernel opens a TPACKET_V3
+// block: it writes the block header, the first packet header and the packet
+// data, and only then atomically publishes the block to userspace by setting
+// block_status to TP_STATUS_USER. Everything written before the status store
+// is guaranteed visible to a reader that observes TP_STATUS_USER.
+func publishV3Block(block []byte, blockSize, firstOffset uint32, payload []byte) (*TPacketHdrV1, *TPacket3Hdr) {
+	bd := (*TPacketBlockDesc)(unsafe.Pointer(&block[0]))
+	bh := (*TPacketHdrV1)(unsafe.Pointer(&bd.Hdr[0]))
+	bh.Num_pkts = 1
+	bh.Offset_to_first_pkt = firstOffset
+	bh.Blk_len = blockSize
+	bh.Seq_num = 1
+
+	// tp_mac = TPACKET_ALIGN(sizeof(tpacket3_hdr)) + sizeof(sockaddr_ll)
+	macOffset := uint32(tpAlign(SizeOfTPacket3Hdr) + 20)
+	pkt := (*TPacket3Hdr)(unsafe.Pointer(&block[firstOffset]))
+	pkt.Snaplen = uint32(len(payload))
+	pkt.Len = uint32(len(payload))
+	pkt.Status = unix.TP_STATUS_USER
+	pkt.Mac = uint16(macOffset)
+	copy(block[firstOffset+macOffset:], payload)
+
+	// The kernel publishes the block only after everything above is written.
+	atomic.StoreUint32(&bh.Block_status, unix.TP_STATUS_USER)
+	return bh, pkt
+}
+
+// TestV3RaceHeaderReadBeforeHandover simulates the TPACKET_V3 handover race
+// (see ~/dd/experimental/users/usama.saqib/afpacket-v3-race-repro/report.md):
+// the reader initializes the v3 wrapper — reading tp_offset_to_first_pkt —
+// while the block header is still zero, the kernel then writes the block
+// header and first packet and publishes the block (TP_STATUS_USER), and only
+// then does the reader proceed to read packet data through the wrapper.
+//
+// This is the exact ordering ZeroCopyReadPacketData produces: getTPacketHeader()
+// runs before pollForFirstPacket() blocks. Once the block has been handed over,
+// the reader must return the packet the kernel actually wrote; a wrapper that
+// read tp_offset_to_first_pkt before the handover instead reads the block
+// header itself as a packet header, returning garbage (or a bogus
+// ErrCorruptedPacket) for a perfectly valid block.
+//
+// When the fix defers reading tp_offset_to_first_pkt until after
+// pollForFirstPacket() succeeds (the reader must re-derive the first-packet
+// pointer from the now-valid block header at that point), this test should
+// pass with no other change.
+func TestV3RaceHeaderReadBeforeHandover(t *testing.T) {
+	const (
+		blockSize   = uint32(4096)
+		firstOffset = uint32(48) // typical: block header is 48 bytes
+	)
+	payload := make([]byte, 200)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	// A fresh ring: the block header is all zeros until the kernel opens it.
+	block := make([]byte, blockSize)
+
+	// Reader step 1: ZeroCopyReadPacketData -> getTPacketHeader ->
+	// initV3Wrapper, which reads tp_offset_to_first_pkt. The kernel has not
+	// written this block yet, so the field reads as 0.
+	w := initV3Wrapper(unsafe.Pointer(&block[0]), blockSize)
+
+	// Kernel steps: open the block (header, first packet, data), then publish
+	// it to userspace, exactly as prb_open_block/prb_close_block would.
+	publishV3Block(block, blockSize, firstOffset, payload)
+
+	// Reader step 2: pollForFirstPacket sees TP_STATUS_USER and the reader
+	// proceeds to read packet data through the wrapper it built in step 1.
+	if w.getStatus()&unix.TP_STATUS_USER == 0 {
+		t.Fatal("block was not published to userspace")
+	}
+
+	data, err := w.getData(&defaultOpts)
+	if err != nil {
+		t.Fatalf("valid published block rejected as corrupted: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Fatalf("reader returned stale block-header data (len %d, bytes % x) instead of the published packet (len %d)", len(data), data, len(payload))
+	}
+	if got := w.getLength(); got != len(payload) {
+		t.Fatalf("packet length: got %d, want %d", got, len(payload))
+	}
+}
+
+// TestV3WrapperReadsBlockAfterHandover is the control case for the race test
+// above: the same block contents, but the wrapper is initialized after the
+// kernel published the block, which is what the kernel contract requires
+// (docs.kernel.org packet_mmap, "AF_PACKET TPACKET_V3 example": the block
+// header is only read once block_status is TP_STATUS_USER). It must pass on
+// any implementation, and proves the synthetic block built by publishV3Block
+// is valid — isolating the race test failure to the premature header read,
+// not to bad test data.
+func TestV3WrapperReadsBlockAfterHandover(t *testing.T) {
+	const (
+		blockSize   = uint32(4096)
+		firstOffset = uint32(48)
+	)
+	payload := make([]byte, 200)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	block := make([]byte, blockSize)
+	publishV3Block(block, blockSize, firstOffset, payload)
+
+	w := initV3Wrapper(unsafe.Pointer(&block[0]), blockSize)
+	if w.getStatus()&unix.TP_STATUS_USER == 0 {
+		t.Fatal("block was not published to userspace")
+	}
+
+	data, err := w.getData(&defaultOpts)
+	if err != nil {
+		t.Fatalf("unexpected error reading published block: %v", err)
+	}
+	if !bytes.Equal(data, payload) {
+		t.Fatalf("reader returned wrong data (len %d), want len %d", len(data), len(payload))
+	}
+	if got := w.getLength(); got != len(payload) {
+		t.Fatalf("packet length: got %d, want %d", got, len(payload))
 	}
 }

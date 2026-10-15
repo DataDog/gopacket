@@ -82,6 +82,7 @@ func TestV3GetDataPacketLargerThanFrameSize(t *testing.T) {
 	pkt.Mac = 128
 	pkt.Snaplen = 1000 // > frameSize, but well within the block
 	w := initV3Wrapper(unsafe.Pointer(&block[0]), blockSize)
+	w.firstPacket()
 
 	data, err := w.getData(&opts)
 	if err != nil {
@@ -112,6 +113,7 @@ func TestV3GetDataRejectsOutOfBlockData(t *testing.T) {
 		pkt.Mac = test.mac
 		pkt.Snaplen = test.snaplen
 		w := initV3Wrapper(unsafe.Pointer(&block[0]), blockSize)
+		w.firstPacket()
 
 		if _, err := w.getData(&opts); !errors.Is(err, ErrCorruptedPacket) {
 			t.Fatalf("mac=%d snaplen=%d: expected ErrCorruptedPacket, got %v", test.mac, test.snaplen, err)
@@ -134,6 +136,7 @@ func TestV3WrapperClampsInvalidFirstPacketOffset(t *testing.T) {
 	bh.Offset_to_first_pkt = 0xffffff00 // far outside the block
 
 	w := initV3Wrapper(unsafe.Pointer(&block[0]), blockSize)
+	w.firstPacket()
 	if _, err := w.getData(&defaultOpts); !errors.Is(err, ErrCorruptedPacket) {
 		t.Fatalf("expected ErrCorruptedPacket, got %v", err)
 	}
@@ -160,6 +163,7 @@ func TestV3NextStaysWithinBlock(t *testing.T) {
 	p2.Snaplen = 16
 
 	w := initV3Wrapper(unsafe.Pointer(&block[0]), blockSize)
+	w.firstPacket()
 	if !w.next() {
 		t.Fatal("expected next() to advance to the second packet")
 	}
@@ -242,6 +246,7 @@ func TestV3RaceHeaderReadBeforeHandover(t *testing.T) {
 	if w.getStatus()&unix.TP_STATUS_USER == 0 {
 		t.Fatal("block was not published to userspace")
 	}
+	w.firstPacket()
 
 	data, err := w.getData(&defaultOpts)
 	if err != nil {
@@ -279,6 +284,7 @@ func TestV3WrapperReadsBlockAfterHandover(t *testing.T) {
 	if w.getStatus()&unix.TP_STATUS_USER == 0 {
 		t.Fatal("block was not published to userspace")
 	}
+	w.firstPacket()
 
 	data, err := w.getData(&defaultOpts)
 	if err != nil {

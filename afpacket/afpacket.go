@@ -320,6 +320,10 @@ retry:
 			h.mu.Unlock()
 			return
 		}
+		if h.tpVersion == TPacketVersion3 {
+			// The block is ours now: its header is fully written.
+			h.v3.firstPacket()
+		}
 		// We received an empty block
 		if h.current.getLength() == 0 {
 			goto retry

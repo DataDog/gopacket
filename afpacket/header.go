@@ -147,19 +147,30 @@ type v3wrapper struct {
 	used      uint32
 }
 
+// initV3Wrapper only locates the block. It must not read anything from the
+// block other than its status: the rest of the block header is owned by the
+// kernel until block_status has TP_STATUS_USER set. Call firstPacket() once the
+// block has been handed over.
 func initV3Wrapper(block unsafe.Pointer, blockSize uint32) (w v3wrapper) {
 	w.block = (*TPacketBlockDesc)(block)
 	w.blockhdr = (*TPacketHdrV1)(unsafe.Pointer(&w.block.Hdr[0]))
 	w.blockSize = blockSize
+	return
+}
+
+// firstPacket points the wrapper at the first packet of a block owned by
+// userspace. The block header is fully written once block_status has
+// TP_STATUS_USER, so tp_offset_to_first_pkt is safe to read here.
+func (w *v3wrapper) firstPacket() {
 	offset := w.blockhdr.Offset_to_first_pkt
-	if uint64(offset)+SizeOfTPacket3Hdr > uint64(blockSize) {
+	if uint64(offset)+SizeOfTPacket3Hdr > uint64(w.blockSize) {
 		// The offset is corrupted and points outside the block. Fall back to
 		// the block start so every read through w.packet stays in bounds;
 		// getData rejects the resulting garbage as a corrupted packet.
 		offset = 0
 	}
-	w.packet = (*TPacket3Hdr)(unsafe.Pointer(uintptr(block) + uintptr(offset)))
-	return
+	w.packet = (*TPacket3Hdr)(unsafe.Pointer(uintptr(unsafe.Pointer(w.block)) + uintptr(offset)))
+	w.used = 0
 }
 
 func (w *v3wrapper) getVLAN() int {

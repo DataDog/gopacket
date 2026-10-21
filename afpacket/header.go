@@ -224,6 +224,6 @@ func (w *v3wrapper) next() bool {
 	if nextOffset+SizeOfTPacket3Hdr > uint64(w.blockSize) {
 		return false
 	}
-	w.packet = (*TPacket3Hdr)(unsafe.Pointer(uintptr(unsafe.Pointer(w.block)) + uintptr(nextOffset)))
+	w.packet = (*TPacket3Hdr)(unsafe.Pointer(uintptr(unsafe.Pointer(w.packet)) + uintptr(w.packet.Next_offset)))
 	return true
 }
